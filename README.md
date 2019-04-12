@@ -1,4 +1,4 @@
-# task
+# Task
 
 A single header library providing a multithreaded job based system
 

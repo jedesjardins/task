@@ -5,7 +5,7 @@ message(STATUS "Examples included")
 
 # Modeled after Catch2 examples directory
 
-# gather all test files
+# gather all example files
 set(SOURCES_SINGLE_FILE
 	# list test files here
 	simple.cpp
@@ -18,7 +18,6 @@ string(REPLACE ".cpp" "" BASENAMES_SINGLE_FILE "${SOURCES_SINGLE_FILE}")
 set(TARGETS_SINGLE_FILE ${BASENAMES_SINGLE_FILE} )
 
 foreach(name ${TARGETS_SINGLE_FILE})
-	message(STATUS "Building ${name} example")
     add_executable(${name} ${CMAKE_CURRENT_LIST_DIR}/${name}.cpp)
-    target_link_libraries(${name} Task)
+    target_link_libraries(${name} Task::Task)
 endforeach()

@@ -1,6 +1,6 @@
 
 #define JED_TASK_IMPLEMENTATION
-#include "task.hpp"
+#include "task/task.hpp"
 
 int main()
 {
