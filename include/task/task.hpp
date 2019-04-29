@@ -234,8 +234,8 @@ static Task* GetTask()
 	auto affine_queue_ptr = GetAffineThreadQueue(thread_id);
 
 	if (affine_queue_ptr->size() > 0) {
-		auto task_ptr = affine_queue_ptr->peek();
-		affine_queue_ptr->pop();
+		auto task_ptr = affine_queue_ptr->front();
+		affine_queue_ptr->pop_front();
 		return task_ptr;
 	}
 
@@ -251,7 +251,7 @@ static Task* GetTask()
 
 	//utl::steal_queue<TaskId> * queue = GetWorkerThreadQueue();
 
-	auto task_ptr = this_queue->pop();
+	auto task_ptr = this_queue->pop_front();
 	if (!task_ptr)
 	{
 
@@ -261,7 +261,7 @@ static Task* GetTask()
 			return nullptr;
 		}
 
-		Task* stolen_task_ptr = steal_queue->steal();
+		Task* stolen_task_ptr = steal_queue->pop_back();
 
 		return stolen_task_ptr;
 	}
@@ -449,7 +449,7 @@ void AsyncRun(TaskId task)
 	{
 		auto affine_queue_ptr = GetAffineThreadQueue(task_ptr->thread_affinity);
 
-		affine_queue_ptr->push(task_ptr);
+		affine_queue_ptr->push_back(task_ptr);
 
 		size_t val = num_waiting;
 
@@ -458,7 +458,7 @@ void AsyncRun(TaskId task)
 	else
 	{
 		utl::steal_queue<Task*>* queue = GetWorkerThreadQueue();
-		queue->push(task_ptr);
+		queue->push_back(task_ptr);
 		if (num_waiting)
 		{
 			cv.notify_one();
