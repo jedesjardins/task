@@ -26,4 +26,4 @@ set(SOURCES
 )
 
 add_executable(tests ${SOURCES})
-target_link_libraries(tests Task::Task Catch2::Catch2)
+target_link_libraries(tests JED::task Catch2::Catch2)

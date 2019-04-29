@@ -49,8 +49,7 @@ void StopWorkerThreads();
 
 TaskId CreateTask(TaskFunction function);
 
-TaskId GetTaskId(Task*);
-Task* GetTaskFromID(TaskId); // TODO: Should this be public?
+TaskId GetTaskID(Task*);
 
 void SetParent(TaskId this_task, TaskId parent_task);
 
@@ -72,9 +71,11 @@ template <typename T>
 typename std::enable_if<std::less_equal<size_t>()(sizeof(T), TASK_PADDING_SIZE), void>::type 
 StoreData(TaskId task, T const& data);
 
+/*
 template <typename T>
 typename std::enable_if<!std::less_equal<size_t>()(sizeof(T), TASK_PADDING_SIZE), void>::type
 StoreData(TaskId task, T const& data);
+*/
 
 template <typename T>
 typename std::enable_if<std::less_equal<size_t>()(sizeof(T), TASK_PADDING_SIZE), T& >::type
@@ -88,14 +89,6 @@ GetData(void* task_data);
 
 template <typename T>
 TaskId CreateParallelForTask(T* data, size_t count, ParallelTaskFunction function, SplitFunction splitter = DefaultSplit);
-
-//
-// If TASK_EXCLUDE_INL is defined task.inl won't be included here and will have to be included manually
-//
-
-#ifndef JED_TASK_EXCLUDE_INL
-#include "task/task.inl"
-#endif
 
 }; // namespace tsk
 
@@ -111,159 +104,16 @@ TaskId CreateParallelForTask(T* data, size_t count, ParallelTaskFunction functio
 
 #ifdef JED_TASK_IMPLEMENTATION
 
-#include <atomic>
-
-namespace utl
-{
-
-template <typename T, size_t N>
-class MPSCQueue
-{
-public:
-	void push(T const& element)
-	{
-		data[(++tail) % N] = element;
-	}
-
-	T* peek()
-	{
-		if (tail < head)
-		{
-			return nullptr;
-		}
-
-		return &data[head%N];
-	}
-
-	void pop()
-	{
-		size_t old_tail = tail;
-		size_t old_head = head;
-
-		if (old_tail >= old_head)
-		{
-			head++;
-		}
-	}
-
-	size_t size()
-	{
-		return (tail-head)+1;
-	}
-
-public:
-	std::atomic<size_t> head{1};
-	std::atomic<size_t> tail{0};
-
-	T data[N]{};
-
-}; // class MPNCQueue
-
-}; // namespace utl
-
 #include <thread>
 #include <random>
 #include <iostream>
 #include <sstream>
 #include <chrono>
 
+#include "mul_utl/mul_utl.hpp"
+
 namespace tsk
 {
-
-//
-// StealQueue Implementation
-//
-
-class StealQueue
-{
-public:
-	StealQueue(size_t n_capacity)
-	:m_tasks{new TaskId[n_capacity]},
-	 capacity{n_capacity}
-	{
-	}
-
-	~StealQueue()
-	{
-		delete[] m_tasks;
-	}
-
-	void Push(TaskId task)
-	{
-		int32_t b = m_bottom;
-		m_tasks[b & (capacity-1)] = task;
-		m_bottom++;
-	}
-
-	TaskId Pop()
-	{
-		int32_t b = --m_bottom;
-		int32_t t = m_top;
-
-		if (t <= b)
-		{
-			// non-empty queue
-			TaskId task = m_tasks[b & (capacity-1)];
-			if (t != b)
-			{
-				// there's still more than one item left in the queue
-				return task;
-			}
-	 
-			// this is the last item in the queue
-			if (std::atomic_compare_exchange_strong(&m_top, &t, t+1))
-			{
-
-				m_bottom = t+1;
-				return task;
-			}
-			// failed race against steal operation
-			return NULL_TASK;
-		}
-		else
-		{
-			// deque was already empty
-			m_bottom = 0;
-			m_top = 0;
-			return NULL_TASK;
-		}
-	}
-
-	TaskId Steal()
-	{
-		int32_t t = m_top;
-		int32_t b = m_bottom;
-		if (t < b)
-		{
-			// non-empty queue
-			TaskId task = m_tasks[t & (capacity-1)];
-			// if m_top = t then it is valid to return task, replace m_top with t+1
-			if (std::atomic_compare_exchange_strong(&m_top, &t, t+1))
-			{
-				return task;
-			}
-
-			return NULL_TASK;
-		}
-		else
-		{
-			// empty queue
-			return NULL_TASK;
-		}
-	}
-
-	size_t size()
-	{
-		return m_bottom - m_top;
-	}
-
-public:
-	std::atomic<int32_t> m_top{0};
-	std::atomic<int32_t> m_bottom{0};
-	TaskId* m_tasks{nullptr};
-	size_t capacity{0};
-};
-
 
 //
 // Threading data
@@ -271,11 +121,11 @@ public:
 
 
 static thread_local size_t thread_id{0};
-static thread_local StealQueue* this_queue{nullptr};
+static thread_local utl::steal_queue<Task*>* this_queue{nullptr};
 static size_t thread_num{0};
 static bool stop_threads{false};
-static StealQueue **steal_queues{nullptr};
-static utl::MPSCQueue<TaskId, 10> *affine_queues{nullptr};
+static utl::steal_queue<Task*> **steal_queues{nullptr};
+static utl::mpsc_s_queue<Task*, 10> *affine_queues{nullptr};
 
 // used to signal/wake waiting threads
 static std::atomic<size_t>* queue_sizes;
@@ -306,10 +156,8 @@ static Task* AllocateTask()
 // Threading Functions
 //
 
-static bool HasTaskCompleted(TaskId task)
+static bool HasTaskCompleted(Task* task_ptr)
 {
-	auto this_task_ptr = GetTaskFromID(task);
-
 	cv.notify_all();
 
 	/*
@@ -320,20 +168,20 @@ static bool HasTaskCompleted(TaskId task)
 	}
 	*/
 
-	return !this_task_ptr->unfinished_tasks;
+	return !task_ptr->unfinished_tasks;
 }
 
-static StealQueue* GetWorkerThreadQueue()
+static utl::steal_queue<Task*>* GetWorkerThreadQueue()
 {
 	return steal_queues[thread_id];
 }
 
-static utl::MPSCQueue<TaskId, 10>* GetAffineThreadQueue(size_t the_thread_id)
+static utl::mpsc_s_queue<Task*, 10>* GetAffineThreadQueue(size_t the_thread_id)
 {
 	return &affine_queues[the_thread_id];
 }
 
-static StealQueue* GetStolenThreadQueue()
+static utl::steal_queue<Task*>* GetStolenThreadQueue()
 {
 
 	for (size_t i = 1; i < thread_num - 1; ++i)
@@ -345,6 +193,11 @@ static StealQueue* GetStolenThreadQueue()
 	}
 
 	return nullptr;
+}
+
+static Task* GetTaskFromID(TaskId task)
+{
+	return reinterpret_cast<Task*>(memory_pool) + task;
 }
 
 static void Finish(Task* task_ptr)
@@ -375,40 +228,52 @@ static void Finish(Task* task_ptr)
 	}
 }
 
-static TaskId GetTask()
+static Task* GetTask()
 {
-	utl::MPSCQueue<TaskId, 10> * affine_queue = GetAffineThreadQueue(thread_id);
+	//utl::mpsc_s_queue<TaskId, 10> * affine_queue = GetAffineThreadQueue(thread_id);
+	auto affine_queue_ptr = GetAffineThreadQueue(thread_id);
 
-	auto task_id_ptr = affine_queue->peek();
+	if (affine_queue_ptr->size() > 0) {
+		auto task_ptr = affine_queue_ptr->peek();
+		affine_queue_ptr->pop();
+		return task_ptr;
+	}
+
+	/*
+	auto task_id = affine_queue->peek();
 
 	if (task_id_ptr != nullptr)
 	{
-		affine_queue->pop();
+		affine_queue->pop(); // task_id_ptr can dangle
 		return *task_id_ptr;
 	}
+	*/
 
-	StealQueue * queue = GetWorkerThreadQueue();
+	//utl::steal_queue<TaskId> * queue = GetWorkerThreadQueue();
 
-	auto task = queue->Pop();
-	if (task == NULL_TASK)
+	auto task_ptr = this_queue->pop();
+	if (!task_ptr)
 	{
 
-		StealQueue* steal_queue = GetStolenThreadQueue();
+		utl::steal_queue<Task*>* steal_queue = GetStolenThreadQueue();
 		if (!steal_queue || steal_queue == this_queue)
 		{
-			return NULL_TASK;
+			return nullptr;
 		}
 
-		TaskId stolen_task = steal_queue->Steal();
-		if (stolen_task == NULL_TASK)
-		{
-			return NULL_TASK;
-		}
+		Task* stolen_task_ptr = steal_queue->steal();
 
-		return stolen_task;
+		return stolen_task_ptr;
 	}
 
-	return task;
+	return task_ptr;
+}
+
+static void SyncRun(Task* task_ptr, TaskId task_id)
+{
+	(task_ptr->function)(thread_id, task_id, task_ptr->data);
+
+	Finish(task_ptr);
 }
 
 static void WorkerThreadFunction(size_t this_thread_id)
@@ -419,10 +284,10 @@ static void WorkerThreadFunction(size_t this_thread_id)
 
 	while (!stop_threads)
 	{
-		TaskId task = GetTask();
-		if (task != NULL_TASK)
+		Task* task_ptr = GetTask();
+		if (task_ptr)
 		{
-			SyncRun(task);
+			SyncRun(task_ptr, GetTaskID(task_ptr));
 		}
 		else
 		{
@@ -453,15 +318,15 @@ void CreateWorkerThreads(size_t thread_count, size_t max_tasks, size_t queue_siz
 	stop_threads = false;
 
 	//initialize affinity queues
-	affine_queues = new utl::MPSCQueue<TaskId, 10>[thread_num];
+	affine_queues = new utl::mpsc_s_queue<Task*, 10>[thread_num];
 
 	//initialize Stealing Queues
-	steal_queues = new StealQueue* [thread_num];
-	steal_queues[0] = new StealQueue{queue_size};
-	this_queue = steal_queues[0]; // main thread StealQueue
+	steal_queues = new utl::steal_queue<Task*>* [thread_num];
+	steal_queues[0] = new utl::steal_queue<Task*>{queue_size};
+	this_queue = steal_queues[0]; // main thread steal_queue
 	for (size_t i = 1; i < thread_num; ++i)
 	{
-		steal_queues[i] = new StealQueue{queue_size};
+		steal_queues[i] = new utl::steal_queue<Task*>{queue_size};
 	}
 
 	//initialize Task Memory Pool
@@ -505,7 +370,7 @@ TaskId CreateTask(TaskFunction function)
 	task->unfinished_tasks = 1;
 	task->continuation_num = 0;
 
-	return GetTaskId(task);
+	return GetTaskID(task);
 }
 
 void SetParent(TaskId this_task, TaskId parent_task)
@@ -554,23 +419,27 @@ TaskId AddContinuation(TaskId ancestor, TaskId descendant)
 	}
 }
 
-TaskId GetTaskId(Task* task_ptr)
+TaskId GetTaskID(Task* task_ptr)
 {
 	return task_ptr - reinterpret_cast<Task*>(memory_pool);
 }
 
+/*
 Task* GetTaskFromID(TaskId task)
 {
 	return reinterpret_cast<Task*>(memory_pool) + task;
 }
+*/
 
-void SyncRun(TaskId task)
+void SyncRun(TaskId task_id)
 {
-	auto task_ptr = GetTaskFromID(task);
+	auto task_ptr = GetTaskFromID(task_id);
 
-	(task_ptr->function)(thread_id, task, task_ptr->data);
+	SyncRun(task_ptr, task_id);
 
-	Finish(task_ptr);
+	//(task_ptr->function)(thread_id, task, task_ptr->data);
+
+	//Finish(task_ptr);
 }
 
 void AsyncRun(TaskId task)
@@ -578,9 +447,9 @@ void AsyncRun(TaskId task)
 	auto task_ptr = GetTaskFromID(task);
 	if (task_ptr->thread_affinity != -1)
 	{
-		auto affine_queue = GetAffineThreadQueue(task_ptr->thread_affinity);
+		auto affine_queue_ptr = GetAffineThreadQueue(task_ptr->thread_affinity);
 
-		affine_queue->push(task);
+		affine_queue_ptr->push(task_ptr);
 
 		size_t val = num_waiting;
 
@@ -588,8 +457,8 @@ void AsyncRun(TaskId task)
 	}
 	else
 	{
-		StealQueue* queue = GetWorkerThreadQueue();
-		queue->Push(task);
+		utl::steal_queue<Task*>* queue = GetWorkerThreadQueue();
+		queue->push(task_ptr);
 		if (num_waiting)
 		{
 			cv.notify_one();
@@ -599,13 +468,15 @@ void AsyncRun(TaskId task)
 
 void Wait(TaskId task)
 {
+	Task* task_ptr = GetTaskFromID(task);
+
 	// wait until the job has completed. in the meantime, work on any other job.
-	while (!HasTaskCompleted(task))
+	while (!HasTaskCompleted(task_ptr))
 	{
-		TaskId next_task = GetTask();
-		if (next_task != NULL_TASK)
+		Task* next_task_ptr = GetTask();
+		if (next_task_ptr)
 		{
-			SyncRun(next_task);
+			SyncRun(next_task_ptr, GetTaskID(next_task_ptr));
 		}
 	}
 }
@@ -623,3 +494,11 @@ bool DefaultSplit(size_t count)
 }; // namespace tsk
 
 #endif /* JED_TASK_IMPLEMENTATION */
+
+//
+// If JED_TASK_EXCLUDE_INL is defined task.inl won't be included here and will have to be included manually
+//
+
+#ifndef JED_TASK_EXCLUDE_INL
+#include "task/task.inl"
+#endif

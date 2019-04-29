@@ -1,4 +1,8 @@
+#ifndef JED_TASK_INL_
+#define JED_TASK_INL_
 
+namespace tsk
+{
 
 template <typename T>
 typename std::enable_if<std::less_equal<size_t>()(sizeof(T), TASK_PADDING_SIZE), void>::type
@@ -13,12 +17,14 @@ StoreData(TaskId task, T const& data)
 	//assert((data == *reinterpret_cast<T*>(task_ptr->data)) && "Data wasn't copied into task correctly");
 }
 
+/*
 template <typename T>
 typename std::enable_if<!std::less_equal<size_t>()(sizeof(T), TASK_PADDING_SIZE), void>::type
 StoreData(TaskId task, T const& data)
 {
 	StoreData(task, &data);
 }
+*/
 
 template <typename T>
 typename std::enable_if<std::less_equal<size_t>()(sizeof(T), TASK_PADDING_SIZE), T& >::type
@@ -117,3 +123,7 @@ TaskId CreateParallelForTask(T* data, size_t count, ParallelTaskFunction functio
 
 	return task;
 }
+
+}; // namespace tsk
+
+#endif

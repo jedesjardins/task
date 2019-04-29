@@ -2,23 +2,23 @@
 #define JED_TASK_IMPLEMENTATION
 #include "task/task.hpp"
 
-#include <iostream>
-
 int main()
 {
 	tsk::CreateWorkerThreads();
 
 	auto task = tsk::CreateTask([](size_t thread_id, tsk::TaskId this_task, void* task_data)
 	{
-		std::cout << "Prints from inside the task\n";
+		auto data = tsk::GetData<int*>(task_data);
+
+		(*data)++;
 	});
 
-	std::cout <<"Prints before the task runs\n";
-
+	int a = 0;
+	tsk::StoreData(task, &a);
 	tsk::AsyncRun(task);
 	tsk::Wait(task);
 
-	std::cout <<"Prints after the task runs\n";
+	assert(a == 1 && "Error: Incrementing the value of the stored pointer didn't increment the value outside of the task");
 
 	tsk::StopWorkerThreads();
 }
