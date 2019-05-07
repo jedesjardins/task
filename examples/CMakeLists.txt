@@ -14,6 +14,7 @@ set(SOURCES_SINGLE_FILE
 	store_pointer_to_array.cpp
 	parallel_for.cpp
 	children_tasks.cpp
+	printing.cpp
 )
 
 # get base names of each file (strips off .cpp)

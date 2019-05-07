@@ -20,14 +20,14 @@ using TaskFunction = void (*)(size_t thread_id, TaskId this_task, void* task_dat
 using ParallelTaskFunction = void (*)(size_t thread_id, TaskId this_task, void* task_data, size_t count);
 using SplitFunction = bool (*)(size_t count);
 
-constexpr size_t TASK_PADDING_SIZE = 64 - 
-	(sizeof(TaskFunction) 					// 8
-		+ sizeof(TaskId) 					// 4
-		+ sizeof(int8_t)					// 1
-		+ sizeof(std::atomic<uint16_t>)		// 2
-		+ sizeof(std::atomic<uint8_t>)		// 1
-		+ 8*sizeof(TaskId));				// 8*4 = 32
-											// total = 48
+constexpr size_t TASK_PADDING_SIZE = 64 -
+	(sizeof(TaskFunction) 					// 8 8
+		+ sizeof(TaskId) 					// 4 2 + 1 (change to uint16_t, add hasparent)
+		+ sizeof(int8_t)					// 1 1
+		+ sizeof(std::atomic<uint16_t>)		// 2 1 (change supported number of children to 2^8)
+		+ sizeof(std::atomic<uint8_t>)		// 1 1 ()
+		+ 8*sizeof(TaskId));				// 8*4 = 32 5*2 = 10
+											// total = 48 new total = 8+10+4+2 = 24 = 32-24 = 8
 
 struct Task
 {
@@ -35,7 +35,7 @@ struct Task
 	TaskId parent{NULL_TASK};
 	int8_t thread_affinity{-1};
 	std::atomic<uint16_t> unfinished_tasks{0}; // max supported children is 2^16
-	std::atomic<uint8_t> continuation_num{0};
+	std::atomic<uint8_t> continuation_num{0}; // does this need to be atomic? When would continuations be added in parallel?
 	TaskId continuations[8];
 	char data[TASK_PADDING_SIZE];
 };
@@ -50,6 +50,8 @@ void StopWorkerThreads();
 TaskId CreateTask(TaskFunction function);
 
 TaskId GetTaskID(Task*);
+
+Task* GetTaskFromID(TaskId);
 
 void SetParent(TaskId this_task, TaskId parent_task);
 
@@ -195,11 +197,6 @@ static utl::steal_queue<Task*>* GetStolenThreadQueue()
 	return nullptr;
 }
 
-static Task* GetTaskFromID(TaskId task)
-{
-	return reinterpret_cast<Task*>(memory_pool) + task;
-}
-
 static void Finish(Task* task_ptr)
 {
 	const size_t unfinished_tasks = --(task_ptr->unfinished_tasks);
@@ -238,18 +235,6 @@ static Task* GetTask()
 		affine_queue_ptr->pop_front();
 		return task_ptr;
 	}
-
-	/*
-	auto task_id = affine_queue->peek();
-
-	if (task_id_ptr != nullptr)
-	{
-		affine_queue->pop(); // task_id_ptr can dangle
-		return *task_id_ptr;
-	}
-	*/
-
-	//utl::steal_queue<TaskId> * queue = GetWorkerThreadQueue();
 
 	auto task_ptr = this_queue->pop_front();
 	if (!task_ptr)
@@ -424,12 +409,10 @@ TaskId GetTaskID(Task* task_ptr)
 	return task_ptr - reinterpret_cast<Task*>(memory_pool);
 }
 
-/*
 Task* GetTaskFromID(TaskId task)
 {
 	return reinterpret_cast<Task*>(memory_pool) + task;
 }
-*/
 
 void SyncRun(TaskId task_id)
 {
@@ -457,8 +440,7 @@ void AsyncRun(TaskId task)
 	}
 	else
 	{
-		utl::steal_queue<Task*>* queue = GetWorkerThreadQueue();
-		queue->push_back(task_ptr);
+		this_queue->push_back(task_ptr);
 		if (num_waiting)
 		{
 			cv.notify_one();
