@@ -186,26 +186,9 @@ static utl::mpsc_s_queue<Task*, 10>* GetAffineThreadQueue(size_t the_thread_id)
 static utl::steal_queue<Task*>* GetStolenThreadQueue()
 {
 
-	/*
-	for (size_t i = 1; i < thread_num - 2; ++i)
-	{
-		if (steal_queues[(thread_id + i)%thread_num]->size() > 0)
-		{
-			printf("Stealing from thread: %zu, in thread %zu\n", (thread_id + i)%thread_num, thread_id);
-			return steal_queues[i];
-		}
-	}
-
-	return nullptr;
-	*/
-
 	for (size_t i = 0; i < thread_num - 1; ++i)
 	{
-		size_t size = steal_queues[i]->size();
-
-		printf("Size of queue in thread %zu: %zu\n", i, size);
-
-		if (size > 0)
+		if (steal_queues[i]->size() > 0)
 		{
 			return steal_queues[i];
 		}
@@ -225,7 +208,6 @@ static void Finish(Task* task_ptr)
 		{
 			Finish(GetTaskFromID(task_ptr->parent));
 		}
-
 
 
 		// run descendent tasks
@@ -259,22 +241,13 @@ static Task* GetTask()
 	{
 
 		utl::steal_queue<Task*>* steal_queue = GetStolenThreadQueue();
-		if (!steal_queue)
+		if (!steal_queue || steal_queue == this_queue)
 		{
-			printf("No Steal Queue found\n");
-			return nullptr;
-		}
-
-		if (steal_queue == this_queue)
-		{
-			printf("stealing queue is this threads queue\n");
 			return nullptr;
 		}
 
 		// steal
 		Task* stolen_task_ptr = steal_queue->pop_back();
-
-		printf("stole: %p, in thread: %zu\n", stolen_task_ptr, thread_id);
 
 		return stolen_task_ptr;
 	}
@@ -310,7 +283,6 @@ static void WorkerThreadFunction(size_t this_thread_id)
 				cv.wait(lock);
 			}
 			--num_waiting;
-			printf("Thread %zu woken up\n", thread_id);
 		}
 	}
 	
