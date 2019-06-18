@@ -27,7 +27,10 @@ add_library(Task INTERFACE)
 target_include_directories(Task
 	INTERFACE
 	$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
-	$<BUILD_INTERFACE:${mul_utl_SOURCE_DIR}/include>
+)
+
+target_link_libraries(Task INTERFACE
+	JED::mul_utl
 )
 
 add_library(JED::task ALIAS Task)
